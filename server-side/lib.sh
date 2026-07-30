@@ -119,7 +119,9 @@ ensure_layout() {
         chmod 600 "${SHARED_ENV}"
         warn "shared .env created from .env.example; admin must fill secrets before first deploy"
       else
-        die "shared .env missing and no .env.example found at ${APP_DIR}/.env.example"
+        touch "${SHARED_ENV}"
+        chmod 600 "${SHARED_ENV}"
+        warn "no .env.example found; created empty ${SHARED_ENV} (fine for apps without secrets)"
       fi
     fi
   }
