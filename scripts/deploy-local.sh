@@ -61,7 +61,7 @@ echo "    repo:    ${REPO_ROOT}"
 echo "    branch:  ${BRANCH}"
 echo "    version: ${VERSION}"
 echo "    channel: local-ssh"
-echo "    target:  ${SSH_HOST}:${SERVER_BIN}"
+echo "    target:  ${SSH_HOST} (agentos gateway)"
 echo "    dry-run: ${DRY_RUN}"
 
 if [[ "${ASSUME_YES}" != "true" ]] && [[ "${DRY_RUN}" != "true" ]]; then
