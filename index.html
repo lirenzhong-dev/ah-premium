@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A+H 股折溢价实时监控</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --border:#e6e8ec; --text:#1f2329; --muted:#6b7280;
+    --up:#d93025; --down:#0f9d58; --accent:#1a56db; --accent-bg:#eef3fe;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); padding:20px;}
+  .wrap{max-width:1180px; margin:0 auto;}
+  h1{font-size:22px; font-weight:700; display:flex; align-items:center; gap:10px;}
+  h1 .dot{width:10px;height:10px;border-radius:50%;background:#9ca3af;display:inline-block;}
+  h1 .dot.live{background:#16a34a; box-shadow:0 0 0 3px rgba(22,163,74,.18); animation:pulse 1.6s infinite;}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.35)}70%{box-shadow:0 0 0 6px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}
+  .sub{color:var(--muted); font-size:13px; margin-top:6px; line-height:1.7;}
+  .toolbar{display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:16px 0 12px;}
+  .toolbar input[type=text]{padding:8px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; width:220px; background:var(--card); color:var(--text);}
+  .toolbar select,.toolbar button{padding:8px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:var(--card); color:var(--text); cursor:pointer;}
+  .toolbar button.primary{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .toolbar .spacer{flex:1;}
+  .meta{font-size:13px; color:var(--muted);}
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-bottom:14px;}
+  .card{background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 14px;}
+  .card .k{font-size:12px; color:var(--muted);}
+  .card .v{font-size:20px; font-weight:700; margin-top:4px;}
+  .card .v small{font-size:12px; font-weight:400; color:var(--muted);}
+  .tablebox{background:var(--card); border:1px solid var(--border); border-radius:10px; overflow:auto;}
+  table{width:100%; border-collapse:collapse; font-size:13.5px; min-width:1050px;}
+  thead th{position:sticky; top:0; background:#fafbfc; border-bottom:1px solid var(--border); padding:10px 8px; font-weight:600; color:#374151; white-space:nowrap; cursor:pointer; user-select:none;}
+  thead th:hover{background:var(--accent-bg); color:var(--accent);}
+  thead th.active{color:var(--accent);}
+  thead th .arr{font-size:10px;}
+  tbody td{padding:8px; border-bottom:1px solid #f0f1f3; white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums;}
+  tbody td.name{text-align:left;}
+  tbody tr:hover{background:#f8fafc;}
+  .stockname{font-weight:600;}
+  .codes{font-size:11.5px; color:var(--muted); margin-top:2px;}
+  .up{color:var(--up);} .down{color:var(--down);} .flat{color:var(--muted);}
+  .disc-cell{display:flex; align-items:center; gap:8px; justify-content:flex-end;}
+  .bar{height:8px; border-radius:4px; background:linear-gradient(90deg,#60a5fa,#1a56db); min-width:2px;}
+  .rank{color:var(--muted);}
+  .prem{font-weight:700;}
+  .badge{display:inline-block; font-size:11px; padding:2px 8px; border-radius:20px; background:var(--accent-bg); color:var(--accent); margin-left:6px; vertical-align:middle;}
+  .err{background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; padding:10px 14px; border-radius:8px; margin:10px 0; font-size:13px; display:none;}
+  .foot{color:var(--muted); font-size:12px; margin:14px 0 30px; line-height:1.8;}
+  @media (max-width:700px){ body{padding:10px;} .toolbar input[type=text]{width:100%;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span class="dot" id="liveDot"></span>A+H 股折溢价实时监控 <span class="badge" id="mktBadge">--</span></h1>
+  <div class="sub">同一公司在 A 股与港股两地上市，同股同权但两地定价不同。<b>AH 溢价率 = A 股价 ÷ (H 股价 × 港币汇率) − 1</b>，溢价率越高代表 H 股相对 A 股折价越深。默认按 H 股折价最深排序，点击任意表头可重新排序。</div>
+
+  <div class="toolbar">
+    <input type="text" id="search" placeholder="搜索名称 / 代码…">
+    <select id="autoSel">
+      <option value="0">自动刷新：关闭</option>
+      <option value="10">自动刷新：10 秒</option>
+      <option value="30" selected>自动刷新：30 秒</option>
+      <option value="60">自动刷新：60 秒</option>
+    </select>
+    <button class="primary" id="refreshBtn">立即刷新</button>
+    <div class="spacer"></div>
+    <div class="meta" id="metaInfo">加载中…</div>
+  </div>
+
+  <div class="err" id="errBox"></div>
+
+  <div class="cards">
+    <div class="card"><div class="k">A+H 配对数</div><div class="v" id="cPairs">--</div></div>
+    <div class="card"><div class="k">港币汇率 HKD/CNY</div><div class="v" id="cFx">--</div></div>
+    <div class="card"><div class="k">溢价率中位数</div><div class="v" id="cMed">--</div></div>
+    <div class="card"><div class="k">H 股折价最深</div><div class="v" id="cMax">--</div></div>
+    <div class="card"><div class="k">H 股贵过 A 股</div><div class="v" id="cNeg">--</div></div>
+  </div>
+
+  <div class="tablebox">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th data-k="rank" style="text-align:left">#</th>
+          <th data-k="name" style="text-align:left">名称</th>
+          <th data-k="aPrice">A股价 (¥)</th>
+          <th data-k="aPct">A涨跌</th>
+          <th data-k="hPrice">H股价 (HK$)</th>
+          <th data-k="hCny">H股折合 (¥)</th>
+          <th data-k="hPct">H涨跌</th>
+          <th data-k="ratio">A/H 比价</th>
+          <th data-k="premium">AH溢价率</th>
+          <th data-k="hDiscount">H股折价</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"><tr><td colspan="10" style="text-align:center;padding:40px;color:#6b7280">正在拉取实时行情…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="foot" id="footNote">
+    数据来源：腾讯行情接口 qt.gtimg.cn（股价与汇率，实时）；A+H 配对名单内置并自动尝试从东方财富接口更新。港股为 15 分钟延迟或实时行情视接口而定；涨跌幅相对各自市场昨收。红涨绿跌。本页面纯前端运行，可部署到任意静态服务器，数据由访问者浏览器直接向行情接口请求。仅供研究参考，不构成投资建议。
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ===== A+H 配对表（H股代码, A股代码, 名称）— 2026-07-30 自东方财富 AH 比价接口获取，共202对 ===== */
+var PAIRS = [
+["09995","688331","荣昌生物"],["09989","002399","海普瑞"],["09981","002130","沃尔核材"],["09980","605499","东鹏饮料"],
+["09969","688428","诺诚健华"],["09927","601127","赛力斯"],["09696","002466","天齐锂业"],["09630","688630","芯碁微装"],
+["09611","603341","龙旗科技"],["06951","300408","三环集团"],["06936","002352","顺丰控股"],["06886","601688","华泰证券"],
+["06881","601881","中国银河"],["06869","601869","长飞光纤光缆"],["06865","601865","福莱特玻璃"],["06826","688366","昊海生物科技"],
+["06821","002821","凯莱英"],["06818","601818","中国光大银行"],["06809","688008","澜起科技"],["06806","000166","申万宏源"],
+["06745","601678","滨化股份"],["06693","600988","赤峰黄金"],["06690","600690","海尔智家"],["06680","300748","金力永磁"],
+["06655","600801","华新建材"],["06613","300433","蓝思科技"],["06198","601298","青岛港"],["06196","002936","郑州银行"],
+["06185","688185","康希诺生物"],["06178","601788","光大证券"],["06166","603083","剑桥科技"],["06160","688235","百济神州"],
+["06127","603127","昭衍新药"],["06099","600999","招商证券"],["06067","300568","星源材质"],["06066","601066","中信建投证券"],
+["06031","600031","三一重工"],["06030","600030","中信证券"],["03996","601868","中国能源建设"],["03993","603993","洛阳钼业"],
+["03988","601988","中国银行"],["03986","603986","兆易创新"],["03969","688009","中国通号"],["03968","600036","招商银行"],
+["03958","600958","东方证券"],["03908","601995","中金公司"],["03898","688187","时代电气"],["03866","002948","青岛银行"],
+["03759","300759","康龙化成"],["03750","300750","宁德时代"],["03678","001236","弘业期货"],["03661","300661","圣邦股份"],
+["03618","601077","重庆农村商业银行"],["03606","600660","福耀玻璃"],["03369","601326","秦港股份"],["03347","300347","泰格医药"],
+["03328","601328","交通银行"],["03308","300308","中际旭创"],["03296","603296","华勤技术"],["03288","603288","海天味业"],
+["03268","002881","美格智能"],["03200","301200","大族数控"],["02899","601899","紫金矿业"],["02883","601808","中海油田服务"],
+["02880","601880","辽港股份"],["02866","601866","中远海发"],["02865","002865","钧达股份"],["02768","002768","国恩科技"],
+["02727","601727","上海电气"],["02715","002747","埃斯顿"],["02714","002714","牧原股份"],["02701","300077","国民技术"],
+["02692","003021","兆威机电"],["02691","603093","南华期货股份"],["02676","688052","纳芯微"],["02648","603345","安井食品"],
+["02631","688234","天岳先进"],["02628","601628","中国人寿"],["02611","601211","国泰海通"],["02607","601607","上海医药"],
+["02603","002803","吉宏股份"],["02601","601601","中国太保"],["02600","601600","中国铝业"],["02579","300919","中伟新材"],
+["02493","688062","迈威生物"],["02476","300476","胜宏科技"],["02475","002475","立讯精密"],["02465","603906","龙蟠科技"],
+["02402","688339","亿华通"],["02359","603259","药明康德"],["02338","000338","潍柴动力"],["02333","601633","长城汽车"],
+["02318","601318","中国平安"],["02315","688796","百奥赛图"],["02249","688249","晶合集成"],["02238","601238","广汽集团"],
+["02218","605198","安德利果汁"],["02208","002202","金风科技"],["02202","000002","万科企业"],["02196","600196","复星医药"],
+["02068","601068","中铝国际"],["02050","002050","三花智控"],["02039","000039","中集集团"],["02016","601916","浙商银行"],
+["02009","601992","金隅集团"],["01989","001389","广合科技"],["01988","600016","民生银行"],["01963","601963","重庆银行"],
+["01919","601919","中远海控"],["01898","601898","中煤能源"],["01880","601888","中国中免"],["01877","688180","君实生物"],
+["01858","688236","春立医疗"],["01816","003816","中广核电力"],["01812","000488","晨鸣纸业"],["01800","601800","中国交通建设"],
+["01787","600547","山东黄金"],["01776","000776","广发证券"],["01772","002460","赣锋锂业"],["01766","601766","中国中车"],
+["01688","002600","领益智造"],["01658","601658","邮储银行"],["01635","600635","大众公用"],["01618","601618","中国中冶"],
+["01528","601828","红星美凯龙"],["01513","000513","丽珠医药"],["01456","601456","国联民生"],["01398","601398","工商银行"],
+["01385","688385","上海复旦"],["01377","301377","鼎泰高科"],["01375","601375","中州证券"],["01349","688505","复旦张江"],
+["01347","688347","华虹半导体"],["01339","601319","中国人保"],["01336","601336","新华保险"],["01330","601330","绿色动力环保"],
+["01304","688279","峰岹科技"],["01288","601288","农业银行"],["01276","600276","恒瑞医药"],["01211","002594","比亚迪"],
+["01187","301087","可孚医疗"],["01186","601186","中国铁建"],["01171","600188","兖矿能源"],["01157","000157","中联重科"],
+["01138","600026","中远海能"],["01108","600876","凯盛新能"],["01088","601088","中国神华"],["01081","002487","大金重工"],
+["01072","600875","东方电气"],["01071","600027","华电国际"],["01065","600874","创业环保"],["01057","002703","浙江世宝"],
+["01055","600029","南方航空"],["01053","601005","重庆钢铁"],["01033","600871","中石化油服"],["00998","601998","中信银行"],
+["00995","600012","皖通高速"],["00991","601991","大唐发电"],["00981","688981","中芯国际"],["00956","600956","新天绿能"],
+["00941","600941","中国移动"],["00939","601939","建设银行"],["00921","000921","海信家电"],["00916","001289","龙源电力"],
+["00914","600585","海螺水泥"],["00902","600011","华能国际"],["00895","002672","东江环保"],["00883","600938","中国海油"],
+["00874","600332","白云山"],["00857","601857","中国石油"],["00811","601811","新华文轩"],["00763","000063","中兴通讯"],
+["00753","601111","中国国航"],["00728","601728","中国电信"],["00719","000756","新华制药"],["00699","600699","均胜电子"],
+["00670","600115","东方航空"],["00668","300866","安克创新"],["00638","300638","广和通"],["00598","601598","中国外运"],
+["00588","601588","北辰实业"],["00568","002490","山东墨龙"],["00564","601717","中创智领"],["00553","600775","南京熊猫"],
+["00548","600548","深高速"],["00537","688337","普源精电"],["00525","601333","广深铁路"],["00501","603501","豪威集团"],
+["00470","300450","先导智能"],["00390","601390","中国中铁"],["00386","600028","中国石化"],["00358","600362","江西铜业"],
+["00347","000898","鞍钢股份"],["00338","600688","上海石化"],["00323","600808","马钢股份"],["00317","600685","中船防务"],
+["00300","000333","美的集团"],["00187","600860","京城股份"],["00177","600377","宁沪高速"],["00168","600600","青岛啤酒"],
+["00107","601107","四川成渝"],["00038","601038","一拖股份"]
+];
+
+/* 尝试从 localStorage 恢复此前自动更新过的配对表 */
+try {
+  var saved = JSON.parse(localStorage.getItem("ahPairsV1") || "null");
+  if (saved && saved.list && saved.list.length > 150) { PAIRS = saved.list; }
+} catch (e) {}
+
+var state = { rows: [], sortKey: "premium", sortDir: -1, fx: NaN, timer: null, loading: false, updatedAt: null, missing: 0 };
+
+function aFullCode(code){ return (code.charAt(0) === "6" ? "sh" : "sz") + code; }
+function hFullCode(code){ return "hk" + code; }
+
+/* ---- 通过 <script> 标签跨域加载腾讯行情（GBK，JS变量赋值格式） ---- */
+function loadScript(url, timeoutMs){
+  return new Promise(function(resolve){
+    var s = document.createElement("script");
+    s.charset = "gbk";
+    s.src = url;
+    var done = false;
+    var t = setTimeout(function(){ if(!done){ done = true; s.remove(); resolve(false); } }, timeoutMs || 12000);
+    s.onload = function(){ if(!done){ done = true; clearTimeout(t); s.remove(); resolve(true); } };
+    s.onerror = function(){ if(!done){ done = true; clearTimeout(t); s.remove(); resolve(false); } };
+    document.head.appendChild(s);
+  });
+}
+
+function chunk(arr, n){
+  var out = [];
+  for (var i = 0; i < arr.length; i += n) { out.push(arr.slice(i, i + n)); }
+  return out;
+}
+
+function parseQuote(code){
+  var raw = window["v_" + code];
+  if (!raw || typeof raw !== "string") return null;
+  var p = raw.split("~");
+  if (p.length < 33) return null;
+  var price = parseFloat(p[3]);
+  var pct = parseFloat(p[32]);
+  if (!isFinite(price) || price <= 0) return null;
+  return { price: price, pct: isFinite(pct) ? pct : 0 };
+}
+
+function fetchAll(){
+  if (state.loading) return;
+  state.loading = true;
+  document.getElementById("refreshBtn").textContent = "刷新中…";
+
+  var codes = ["whHKDCNY"];
+  PAIRS.forEach(function(pr){ codes.push(aFullCode(pr[1])); codes.push(hFullCode(pr[0])); });
+  var batches = chunk(codes, 55).map(function(c){
+    return loadScript("https://qt.gtimg.cn/q=" + c.join(",") + "&r=" + Date.now());
+  });
+
+  Promise.all(batches).then(function(results){
+    var okCount = results.filter(Boolean).length;
+    /* 汇率 */
+    var fxRaw = window["v_whHKDCNY"];
+    if (fxRaw) {
+      var fp = fxRaw.split("~");
+      var r = parseFloat(fp[3]);
+      if (isFinite(r) && r > 0.5 && r < 1.5) state.fx = r;
+    }
+    if (!isFinite(state.fx)) {
+      showErr("未能获取港币汇率，暂以 0.92 估算，溢价率仅供参考。");
+      state.fx = 0.92;
+    }
+
+    var rows = [];
+    var missing = 0;
+    PAIRS.forEach(function(pr){
+      var a = parseQuote(aFullCode(pr[1]));
+      var h = parseQuote(hFullCode(pr[0]));
+      if (!a || !h) { missing++; return; }
+      var hCny = h.price * state.fx;
+      var ratio = a.price / hCny;
+      rows.push({
+        name: pr[2], aCode: pr[1], hCode: pr[0],
+        aPrice: a.price, aPct: a.pct,
+        hPrice: h.price, hPct: h.pct,
+        hCny: hCny, ratio: ratio,
+        premium: (ratio - 1) * 100,
+        hDiscount: (1 - hCny / a.price) * 100
+      });
+    });
+
+    state.rows = rows;
+    state.missing = missing;
+    state.updatedAt = new Date();
+    state.loading = false;
+    document.getElementById("refreshBtn").textContent = "立即刷新";
+    if (okCount === 0 || rows.length === 0) {
+      showErr("行情接口请求失败，请检查网络后点击「立即刷新」重试。");
+    } else {
+      hideErr();
+    }
+    render();
+    cleanupVars(codes);
+  });
+}
+
+function cleanupVars(codes){
+  codes.forEach(function(c){ try { delete window["v_" + c]; } catch (e) { window["v_" + c] = undefined; } });
+}
+
+function showErr(msg){ var el = document.getElementById("errBox"); el.textContent = msg; el.style.display = "block"; }
+function hideErr(){ document.getElementById("errBox").style.display = "none"; }
+
+/* ---- 排序 / 搜索 / 渲染 ---- */
+function sortedRows(){
+  var kw = document.getElementById("search").value.trim().toLowerCase();
+  var rows = state.rows.filter(function(r){
+    if (!kw) return true;
+    return r.name.toLowerCase().indexOf(kw) >= 0 || r.aCode.indexOf(kw) >= 0 || r.hCode.indexOf(kw) >= 0;
+  });
+  var k = state.sortKey, d = state.sortDir;
+  if (k !== "rank") {
+    rows.sort(function(x, y){
+      if (k === "name") return d * x.name.localeCompare(y.name, "zh");
+      return d * (x[k] - y[k]);
+    });
+  } else {
+    rows.sort(function(x, y){ return y.premium - x.premium; });
+  }
+  return rows;
+}
+
+function pctCell(v){
+  var cls = v > 0 ? "up" : (v < 0 ? "down" : "flat");
+  var sign = v > 0 ? "+" : "";
+  return '<td class="' + cls + '">' + sign + v.toFixed(2) + "%</td>";
+}
+
+function fmt(v, n){ return v.toFixed(n === undefined ? 2 : n); }
+
+function render(){
+  var rows = sortedRows();
+  var maxDisc = 0;
+  state.rows.forEach(function(r){ if (r.hDiscount > maxDisc) maxDisc = r.hDiscount; });
+
+  var html = "";
+  /* 全量排名（按溢价率降序）用于显示固定名次 */
+  var rankMap = {};
+  state.rows.slice().sort(function(a, b){ return b.premium - a.premium; })
+    .forEach(function(r, i){ rankMap[r.hCode] = i + 1; });
+
+  rows.forEach(function(r){
+    var barW = maxDisc > 0 && r.hDiscount > 0 ? Math.max(2, (r.hDiscount / maxDisc) * 70) : 0;
+    var premCls = r.premium > 0 ? "up" : (r.premium < 0 ? "down" : "flat");
+    html += "<tr>" +
+      '<td class="rank" style="text-align:left">' + rankMap[r.hCode] + "</td>" +
+      '<td class="name"><div class="stockname">' + r.name + '</div><div class="codes">A ' + r.aCode + " · H " + r.hCode + "</div></td>" +
+      "<td>" + fmt(r.aPrice) + "</td>" +
+      pctCell(r.aPct) +
+      "<td>" + fmt(r.hPrice, 3) + "</td>" +
+      "<td>" + fmt(r.hCny) + "</td>" +
+      pctCell(r.hPct) +
+      "<td>" + fmt(r.ratio) + "</td>" +
+      '<td class="prem ' + premCls + '">' + (r.premium > 0 ? "+" : "") + fmt(r.premium, 1) + "%</td>" +
+      '<td><div class="disc-cell"><span>' + fmt(r.hDiscount, 1) + '%</span><div class="bar" style="width:' + barW + 'px"></div></div></td>' +
+      "</tr>";
+  });
+  if (!html) html = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#6b7280">无匹配结果</td></tr>';
+  document.getElementById("tbody").innerHTML = html;
+
+  /* 表头高亮 */
+  document.querySelectorAll("thead th").forEach(function(th){
+    var k = th.getAttribute("data-k");
+    var base = th.textContent.replace(/[▲▼]\s*$/, "").trim();
+    th.classList.toggle("active", k === state.sortKey);
+    th.innerHTML = base + (k === state.sortKey ? ' <span class="arr">' + (state.sortDir > 0 ? "▲" : "▼") + "</span>" : "");
+  });
+
+  /* 汇总卡片 */
+  var all = state.rows;
+  document.getElementById("cPairs").innerHTML = all.length + ' <small>/ ' + PAIRS.length + (state.missing ? "（" + state.missing + " 只停牌/无行情）" : "") + "</small>";
+  document.getElementById("cFx").textContent = isFinite(state.fx) ? state.fx.toFixed(4) : "--";
+  if (all.length) {
+    var prems = all.map(function(r){ return r.premium; }).sort(function(a, b){ return a - b; });
+    var med = prems[Math.floor(prems.length / 2)];
+    document.getElementById("cMed").innerHTML = "+" + med.toFixed(1) + "%";
+    var top = all.slice().sort(function(a, b){ return b.hDiscount - a.hDiscount; })[0];
+    document.getElementById("cMax").innerHTML = top.name + ' <small>折 ' + top.hDiscount.toFixed(1) + "%</small>";
+    var neg = all.filter(function(r){ return r.premium < 0; }).length;
+    document.getElementById("cNeg").innerHTML = neg + ' <small>只（H 股溢价）</small>';
+  }
+
+  /* 元信息 */
+  var t = state.updatedAt;
+  document.getElementById("metaInfo").textContent = t ? ("更新于 " + t.toLocaleTimeString("zh-CN", { hour12: false })) : "";
+  updateMarketBadge();
+}
+
+function updateMarketBadge(){
+  var now = new Date();
+  var day = now.getDay();
+  var hm = now.getHours() * 100 + now.getMinutes();
+  var aOpen = day >= 1 && day <= 5 && ((hm >= 930 && hm <= 1130) || (hm >= 1300 && hm <= 1500));
+  var hOpen = day >= 1 && day <= 5 && ((hm >= 930 && hm <= 1200) || (hm >= 1300 && hm <= 1600));
+  var txt, live;
+  if (aOpen && hOpen) { txt = "两市盘中"; live = true; }
+  else if (aOpen) { txt = "A股盘中"; live = true; }
+  else if (hOpen) { txt = "港股盘中"; live = true; }
+  else { txt = "休市（显示最近收盘价）"; live = false; }
+  document.getElementById("mktBadge").textContent = txt;
+  document.getElementById("liveDot").classList.toggle("live", live);
+}
+
+/* ---- 自动刷新 ---- */
+function setAuto(sec){
+  if (state.timer) { clearInterval(state.timer); state.timer = null; }
+  if (sec > 0) { state.timer = setInterval(fetchAll, sec * 1000); }
+}
+
+/* ---- 每次打开时尝试从东方财富静默更新配对表（失败则继续用内置表） ---- */
+function tryUpdatePairs(){
+  var cbName = "ahPairsCb" + Date.now();
+  window[cbName] = function(resp){
+    try {
+      if (resp && resp.data && resp.data.diff && resp.data.diff.length > 150) {
+        var list = resp.data.diff.map(function(d){ return [d.f12, d.f191, d.f14]; });
+        PAIRS = list;
+        localStorage.setItem("ahPairsV1", JSON.stringify({ ts: Date.now(), list: list }));
+      }
+    } catch (e) {}
+    delete window[cbName];
+  };
+  var url = "https://push2.eastmoney.com/api/qt/clist/get?cb=" + cbName +
+    "&pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fid=f12&fs=b:DLMK0101&fields=f12,f14,f191";
+  loadScript(url, 8000);
+}
+
+/* ---- 事件绑定 ---- */
+document.querySelectorAll("thead th").forEach(function(th){
+  th.addEventListener("click", function(){
+    var k = th.getAttribute("data-k");
+    if (state.sortKey === k) { state.sortDir = -state.sortDir; }
+    else { state.sortKey = k; state.sortDir = (k === "name" || k === "rank") ? 1 : -1; }
+    render();
+  });
+});
+document.getElementById("search").addEventListener("input", render);
+document.getElementById("refreshBtn").addEventListener("click", fetchAll);
+document.getElementById("autoSel").addEventListener("change", function(){ setAuto(parseInt(this.value, 10)); });
+
+/* ---- 启动 ---- */
+tryUpdatePairs();
+fetchAll();
+setAuto(30);
+setInterval(updateMarketBadge, 30000);
+</script>
+</body>
+</html>
