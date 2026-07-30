@@ -42,8 +42,8 @@ KEEP_RELEASES="5"
 SERVICE_NAME="ah-premium"
 SYSTEMD_UNIT="${SERVICE_NAME}.service"
 
-SOURCE_BASE_URL="${SOURCE_BASE_URL:-https://github.com/none/ah-premium}"
-SOURCE_TARBALL_PATTERN="${SOURCE_TARBALL_PATTERN:-/archive/${VERSION}.tar.gz}"
+SOURCE_BASE_URL="${SOURCE_BASE_URL:-https://github.com/lirenzhong-dev/ah-premium}"
+SOURCE_TARBALL_PATTERN="${SOURCE_TARBALL_PATTERN:-/archive/\${VERSION}.tar.gz}"
 LOCAL_SOURCE_DIR="${LOCAL_SOURCE_DIR:-}"
 
 # ---------- logging ----------

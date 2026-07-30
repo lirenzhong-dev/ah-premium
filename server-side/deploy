@@ -69,7 +69,7 @@ if [[ "${VERSION_VAL}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
       COMMIT_SHA="$(git -C "${APP_DIR}/repo.git" rev-parse "${VERSION_VAL}^{commit}" 2>/dev/null || true)"
     fi
     if [[ -z "${COMMIT_SHA:-}" ]]; then
-      COMMIT_SHA="$(curl -fsSL "https://api.github.com/repos/none/ah-premium/git/refs/tags/${VERSION_VAL}" \
+      COMMIT_SHA="$(curl -fsSL "https://api.github.com/repos/lirenzhong-dev/ah-premium/git/refs/tags/${VERSION_VAL}" \
         | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("object",{}).get("sha",""))')"
     fi
     [[ -n "${COMMIT_SHA}" ]] || die "could not resolve commit for tag ${VERSION_VAL}"
