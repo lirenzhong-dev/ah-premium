@@ -302,7 +302,10 @@ function sortedRows(){
     rows.sort(function(x, y){
       if (k === "name") return d * x.name.localeCompare(y.name, "zh");
       var xv = x[k], yv = y[k];
-      var xBad = !isFinite(xv), yBad = !isFinite(yv);
+      /* 市盈率为负数代表亏损，视为无效值排在最后 */
+      var isPe = (k === "hPe" || k === "aPe");
+      var bad = function(v){ return !isFinite(v) || (isPe && v <= 0); };
+      var xBad = bad(xv), yBad = bad(yv);
       if (xBad && yBad) return 0;
       if (xBad) return 1;  /* 无数据的始终排在最后 */
       if (yBad) return -1;
@@ -323,9 +326,12 @@ function pctCell(v){
 function fmt(v, n){ return v.toFixed(n === undefined ? 2 : n); }
 
 /* 双值单元格：上=A股口径，下=H股口径 */
-function dualCell(aV, hV, suffix){
+function dualCell(aV, hV, suffix, mode){
   var f = function(v){
     if (!isFinite(v)) return "--";
+    /* 市盈率为负 = 公司亏损，负PE无估值意义 */
+    if (mode === "pe" && v <= 0) return "亏损";
+    if (mode === "yield" && v <= 0) return "不分红";
     return v.toFixed(v >= 100 ? 1 : 2) + (suffix || "");
   };
   return '<td class="dual"><div>A ' + f(aV) + '</div><div class="hv">H ' + f(hV) + "</div></td>";
@@ -356,8 +362,8 @@ function render(){
       "<td>" + fmt(r.ratio) + "</td>" +
       '<td class="prem ' + premCls + '">' + (r.premium > 0 ? "+" : "") + fmt(r.premium, 1) + "%</td>" +
       '<td><div class="disc-cell"><span>' + fmt(r.hDiscount, 1) + '%</span><div class="bar" style="width:' + barW + 'px"></div></div></td>' +
-      dualCell(r.aYield, r.hYield, "%") +
-      dualCell(r.aPe, r.hPe) +
+      dualCell(r.aYield, r.hYield, "%", "yield") +
+      dualCell(r.aPe, r.hPe, "", "pe") +
       dualCell(r.aPb, r.hPb) +
       "</tr>";
   });
