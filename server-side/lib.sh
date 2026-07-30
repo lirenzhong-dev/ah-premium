@@ -43,7 +43,7 @@ SERVICE_NAME="ah-premium"
 SYSTEMD_UNIT="${SERVICE_NAME}.service"
 
 SOURCE_BASE_URL="${SOURCE_BASE_URL:-https://github.com/lirenzhong-dev/ah-premium}"
-SOURCE_TARBALL_PATTERN="${SOURCE_TARBALL_PATTERN:-/archive/\${VERSION}.tar.gz}"
+SOURCE_TARBALL_PATTERN="${SOURCE_TARBALL_PATTERN:-/archive/__VERSION__.tar.gz}"
 LOCAL_SOURCE_DIR="${LOCAL_SOURCE_DIR:-}"
 
 # ---------- logging ----------
@@ -137,7 +137,7 @@ fetch_source() {
   apply mkdir -p "${stage}"
   case "${DEPLOY_SOURCE}" in
     github-actions)
-      local url="${SOURCE_BASE_URL}${SOURCE_TARBALL_PATTERN//\$\{VERSION\}/${version}}"
+      local url="${SOURCE_BASE_URL}${SOURCE_TARBALL_PATTERN//__VERSION__/${version}}"
       info "fetching source tarball: ${url}"
       if [[ "${DRY_RUN}" == "true" ]]; then
         info "dry-run: would curl -fsSL ${url} | tar -xz -C ${stage} --strip-components=1"
@@ -158,7 +158,9 @@ fetch_source() {
       die "unknown DEPLOY_SOURCE: ${DEPLOY_SOURCE} (expected: github-actions or local-ssh)"
       ;;
   esac
-  [[ -f "${stage}/package.json" ]] || [[ -f "${stage}/./package.json" ]] || die "fetched source missing package.json; aborting"
+  if [[ "${DRY_RUN}" != "true" ]]; then
+    [[ -f "${stage}/package.json" ]] || [[ -f "${stage}/./package.json" ]] || die "fetched source missing package.json; aborting"
+  fi
   printf '%s' "${stage}"
 }
 
