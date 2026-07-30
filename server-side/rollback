@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# rollback — server-side rollback to the previous stable release.
+# RENDERED from ~/AgentOS/deployment/templates/server-side/rollback.template
+#
+# Called by BOTH GitHub Actions and Mac local SSH channels.
+#
+# Flags:
+#   --dry-run     show what would happen
+#   --target <v>  override target (default: previous symlink)
+#
+# Exit codes:
+#   0  success
+#   1  no previous release / switch failed
+#   2  rollback deployed but healthcheck failed (manual intervention)
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
+DRY_RUN="false"
+TARGET=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN="true"; shift ;;
+    --target)  TARGET="$2"; shift 2 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+export DRY_RUN
+
+require_root_or_sudo
+require_cmd systemctl python3
+
+acquire_lock
+trap 'release_lock' EXIT
+
+ensure_layout
+
+if [[ -z "${TARGET}" ]]; then
+  TARGET="$(previous_version)"
+fi
+if [[ "${TARGET}" == "<none>" ]] || [[ ! -d "${RELEASES_DIR}/${TARGET}" ]]; then
+  die "no previous release to roll back to (target=${TARGET})"
+fi
+
+CURRENT_BEFORE="$(current_version)"
+info "rolling back: current=${CURRENT_BEFORE} -> target=${TARGET}"
+START_TS="$(_ts)"
+
+if [[ -L "${CURRENT_LINK}" ]]; then
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    info "dry-run: would set previous = $(readlink "${CURRENT_LINK}")"
+  else
+    ln -sfn "$(readlink "${CURRENT_LINK}")" "${PREVIOUS_LINK}"
+  fi
+fi
+
+if [[ "${DRY_RUN}" == "true" ]]; then
+  info "dry-run: would ln -sfn ${RELEASES_DIR}/${TARGET} ${CURRENT_LINK}"
+  info "dry-run: would systemctl restart ${SERVICE_NAME}"
+  info "dry-run: would run healthcheck ${HEALTHCHECK_URL}"
+  info "ROLLBACK DRY-RUN OK — would have moved ${CURRENT_BEFORE} -> ${TARGET}"
+  exit 0
+fi
+
+ln -sfn "${RELEASES_DIR}/${TARGET}" "${CURRENT_LINK}"
+systemctl restart "${SERVICE_NAME}"
+
+set +e
+wait_for_healthy
+HEALTH_RC=$?
+set -e
+
+FINISH_TS="$(_ts)"
+
+if [[ ${HEALTH_RC} -ne 0 ]]; then
+  err "rollback healthcheck failed (target=${TARGET})"
+  record_deployment \
+    "${TARGET}" "" "" "rollback" "${START_TS}" "${FINISH_TS}" "${CURRENT_BEFORE}" \
+    "rollback_failed" "failed" "" "true" \
+    "${SHARED_LOGS}/rollback-${TARGET}-$(date -u +%Y%m%dT%H%M%SZ).log"
+  exit 2
+fi
+
+record_deployment \
+  "${TARGET}" "" "" "rollback" "${START_TS}" "${FINISH_TS}" "${CURRENT_BEFORE}" \
+  "rollback_success" "ok" "" "true" \
+  "${SHARED_LOGS}/rollback-${TARGET}-$(date -u +%Y%m%dT%H%M%SZ).log"
+
+info "ROLLBACK OK — current=${TARGET} (was ${CURRENT_BEFORE})"

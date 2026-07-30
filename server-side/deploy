@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# deploy — server-side deployment entrypoint.
+# RENDERED from ~/AgentOS/deployment/templates/server-side/deploy.template
+#
+# Called by BOTH:
+#   - GitHub Actions workflow (after this script is pushed to server via bootstrap)
+#   - Mac local SSH channel (scripts/deploy-local.sh)
+#
+# Required env (set by the caller):
+#   DEPLOY_SOURCE  = "github-actions" | "local-ssh"
+#   VERSION        = git tag or commit SHA to deploy
+# Optional:
+#   ROLLBACK_ON_FAILURE = "true" (default true; automatic via guarded_switch)
+#   HEALTHCHECK_TIMEOUT / HEALTHCHECK_RETRIES
+#   LOCAL_SOURCE_DIR (local-ssh only)
+#
+# Flags:
+#   --dry-run        show what would happen
+#   --source <name>  override DEPLOY_SOURCE
+#   --version <v>    override VERSION
+#   --no-prune       skip release pruning
+#
+# Exit codes:
+#   0  success
+#   1  generic failure
+#   2  healthcheck failed AND rollback also failed (manual intervention needed)
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
+# ---------- arg parsing ----------
+DRY_RUN="false"
+PRUNE="true"
+DEPLOY_SOURCE="${DEPLOY_SOURCE:-github-actions}"
+VERSION_VAL="${VERSION:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN="true"; shift ;;
+    --source)  DEPLOY_SOURCE="$2"; shift 2 ;;
+    --version) VERSION_VAL="$2"; shift 2 ;;
+    --no-prune) PRUNE="false"; shift ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+export DRY_RUN
+
+# ---------- preconditions ----------
+require_root_or_sudo
+require_cmd curl tar rsync systemctl python3 flock
+
+[[ -n "${VERSION_VAL}" ]] || die "VERSION is required (use --version or set VERSION=...)"
+case "${DEPLOY_SOURCE}" in
+  github-actions|local-ssh) ;;
+  *) die "DEPLOY_SOURCE must be 'github-actions' or 'local-ssh' (got: ${DEPLOY_SOURCE})" ;;
+esac
+
+# Resolve commit SHA for tag inputs.
+if [[ "${VERSION_VAL}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+  info "resolving commit for tag ${VERSION_VAL}"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    COMMIT_SHA="${VERSION_VAL}"
+  else
+    if [[ -d "${APP_DIR}/repo.git" ]]; then
+      COMMIT_SHA="$(git -C "${APP_DIR}/repo.git" rev-parse "${VERSION_VAL}^{commit}" 2>/dev/null || true)"
+    fi
+    if [[ -z "${COMMIT_SHA:-}" ]]; then
+      COMMIT_SHA="$(curl -fsSL "https://api.github.com/repos/none/ah-premium/git/refs/tags/${VERSION_VAL}" \
+        | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("object",{}).get("sha",""))')"
+    fi
+    [[ -n "${COMMIT_SHA}" ]] || die "could not resolve commit for tag ${VERSION_VAL}"
+  fi
+  VERSION="${COMMIT_SHA}"
+  GIT_TAG="${VERSION_VAL}"
+else
+  VERSION="${VERSION_VAL}"
+  GIT_TAG=""
+fi
+COMMIT_SHA="${VERSION}"
+
+info "deploy ah-premium version=${VERSION} source=${DEPLOY_SOURCE} dry_run=${DRY_RUN}"
+export DEPLOY_SOURCE VERSION
+
+# ---------- acquire lock ----------
+acquire_lock
+trap 'release_lock' EXIT
+
+# ---------- ensure layout ----------
+ensure_layout
+
+# ---------- snapshot previous version ----------
+PREVIOUS_VERSION="$(current_version)"
+START_TS="$(_ts)"
+
+# ---------- fetch + install ----------
+STAGE="$(fetch_source "${VERSION}")"
+install_deps "${STAGE}"
+
+# ---------- atomic switch with healthcheck guard ----------
+set +e
+guarded_switch "${STAGE}" "${VERSION}" "${COMMIT_SHA}"
+SWITCH_RC=$?
+set -e
+
+FINISH_TS="$(_ts)"
+HEALTH_RESULT="ok"
+ROLLBACK_PERFORMED="false"
+if [[ ${SWITCH_RC} -ne 0 ]]; then
+  HEALTH_RESULT="failed"
+  if [[ "${SWITCH_RC}" -eq 2 ]]; then
+    HEALTH_RESULT="failed_and_rollback_failed"
+  else
+    ROLLBACK_PERFORMED="true"
+  fi
+  record_deployment \
+    "${VERSION}" "${COMMIT_SHA}" "${GIT_TAG}" "${DEPLOY_SOURCE}" \
+    "${START_TS}" "${FINISH_TS}" "${PREVIOUS_VERSION}" \
+    "failed" "${HEALTH_RESULT}" "" "${ROLLBACK_PERFORMED}" \
+    "${SHARED_LOGS}/deploy-${VERSION}-$(date -u +%Y%m%dT%H%M%SZ).log"
+  exit "${SWITCH_RC}"
+fi
+
+# ---------- prune old releases ----------
+[[ "${PRUNE}" == "true" ]] && prune_releases
+
+# ---------- record ----------
+record_deployment \
+  "${VERSION}" "${COMMIT_SHA}" "${GIT_TAG}" "${DEPLOY_SOURCE}" \
+  "${START_TS}" "${FINISH_TS}" "${PREVIOUS_VERSION}" \
+  "success" "${HEALTH_RESULT}" "" "${ROLLBACK_PERFORMED}" \
+  "${SHARED_LOGS}/deploy-${VERSION}-$(date -u +%Y%m%dT%H%M%SZ).log"
+
+info "DEPLOY OK — version=${VERSION} previous=${PREVIOUS_VERSION}"

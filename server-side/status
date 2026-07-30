@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# status — server-side status snapshot.
+# RENDERED from ~/AgentOS/deployment/templates/server-side/status.template
+#
+# Format (one per line, key: value):
+#   current_version, previous_version, service, health, releases_kept,
+#   lock_held, last_deployment_result, last_deployment_source,
+#   last_deployment_version, last_deployment_finished_at, last_deployment_log,
+#   healthcheck_url
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
+require_cmd systemctl python3
+
+CURRENT="$(current_version)"
+PREVIOUS="$(previous_version)"
+
+if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+  SERVICE_STATE="active"
+else
+  SERVICE_STATE="$(systemctl is-active "${SERVICE_NAME}" 2>/dev/null || echo unknown)"
+fi
+
+HEALTH="unknown"
+if [[ "${SERVICE_STATE}" == "active" ]]; then
+  if curl -fsS --max-time 5 "${HEALTHCHECK_URL}" >/dev/null 2>&1; then
+    HEALTH="ok"
+  else
+    HEALTH="fail"
+  fi
+fi
+
+RELEASES_KEPT="$(find "${RELEASES_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+LOCK_HELD="false"
+[[ -e "${LOCK_PATH}" ]] && LOCK_HELD="true"
+
+LAST_RESULT="none"
+LAST_SOURCE=""
+LAST_VERSION=""
+LAST_FINISHED=""
+LAST_LOG=""
+if [[ -f "${DEPLOY_HISTORY}" ]]; then
+  read -r LAST_RESULT LAST_SOURCE LAST_VERSION LAST_FINISHED LAST_LOG < <(
+    tail -n 1 "${DEPLOY_HISTORY}" | python3 -c '
+import json,sys
+try:
+  d=json.loads(sys.stdin.read())
+  print(d.get("result",""), d.get("source",""), d.get("version",""), d.get("finished_at",""), d.get("log_path",""))
+except Exception:
+  print("none     ")
+' | tr '\n' ' '
+  )
+fi
+
+cat <<EOF
+current_version: ${CURRENT}
+previous_version: ${PREVIOUS}
+service: ${SERVICE_STATE}
+health: ${HEALTH}
+releases_kept: ${RELEASES_KEPT}
+lock_held: ${LOCK_HELD}
+last_deployment_result: ${LAST_RESULT}
+last_deployment_source: ${LAST_SOURCE}
+last_deployment_version: ${LAST_VERSION}
+last_deployment_finished_at: ${LAST_FINISHED}
+last_deployment_log: ${LAST_LOG}
+healthcheck_url: ${HEALTHCHECK_URL}
+EOF

@@ -1,0 +1,28 @@
+# project-config.yml — ah-premium（A+H 股折溢价实时监控，纯静态页面）
+#
+# 纯前端单文件 HTML：服务器只负责静态托管，行情数据由访问者浏览器
+# 直连腾讯行情接口获取，服务器上无需任何构建或后端进程依赖。
+
+project_name: ah-premium
+app_dir:      /opt/projects/ah-premium
+app_port:     4415
+app_host:     127.0.0.1
+deploy_user:  deploy
+service_name: ah-premium
+
+github_owner: none
+github_repo:  ah-premium
+
+workdir_rel:  .
+
+# 静态页面：无构建步骤
+build_cmd:    "true"
+# 用 python3 内置静态服务器托管当前发布目录
+start_cmd:    "python3 -m http.server 4415 --bind 127.0.0.1 --directory ."
+
+healthcheck_url:        "http://127.0.0.1:4415/index.html"
+healthcheck_timeout:    30
+healthcheck_retries:    3
+keep_releases:          5
+
+ssh_alias:     tencent-production

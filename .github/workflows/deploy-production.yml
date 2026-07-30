@@ -1,0 +1,147 @@
+# RENDERED from ~/AgentOS/deployment/templates/github-actions/deploy-production.yml.template
+# by onboard-project.sh. Do not edit the rendered copy in a project — re-render instead.
+
+name: deploy-production
+
+# Single source of truth for "deploy to production".
+# Triggers:
+#   1. workflow_dispatch (manual) — inputs below
+#   2. push of a tag matching v*.*.* — auto-deploy stable releases
+#
+# Both channels call the SAME server-side bin/deploy script.
+# This workflow's job is to deliver VERSION+SOURCE and stream logs; it does NOT
+# implement any deployment logic itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Git tag (vX.Y.Z) or commit SHA to deploy. Leave empty for HEAD."
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "If true, do everything except actually switch the live version."
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+      rollback_on_failure:
+        description: "Hint only; the server script always auto-rolls back on healthcheck failure."
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+  push:
+    tags: ["v*.*.*"]
+
+# GitHub-level concurrency: only one production deploy runs at a time on GitHub's side.
+# The server-side lock is still the source of truth.
+concurrency:
+  group: ah-premium-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy to production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ steps.health.outputs.url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve target version
+        id: version
+        run: |
+          set -euo pipefail
+          INPUT_VERSION="${{ inputs.version }}"
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            VERSION="${INPUT_VERSION}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${GITHUB_SHA}"
+          fi
+          if [[ "${VERSION}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            SHA="$(git rev-parse "${VERSION}^{commit}")"
+          else
+            SHA="${VERSION}"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${SHA}"       >> "${GITHUB_OUTPUT}"
+          echo "Resolved: version=${VERSION} sha=${SHA}"
+
+      - name: Verify required secrets/variables exist
+        env:
+          PROD_HOST: ${{ vars.PRODUCTION_HOST }}
+          PROD_USER: ${{ vars.PRODUCTION_USER }}
+          PROD_KH:   ${{ vars.PRODUCTION_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          MISSING=0
+          for v in "PRODUCTION_HOST=${PROD_HOST}" "PRODUCTION_USER=${PROD_USER}" "PRODUCTION_KNOWN_HOSTS=${PROD_KH}"; do
+            name="${v%%=*}"; val="${v#*=}"
+            if [[ -z "${val}" ]]; then
+              echo "  MISSING: ${name}"
+              MISSING=$((MISSING+1))
+            fi
+          done
+          if [[ "${MISSING}" -ne 0 ]]; then
+            echo "FAIL: ${MISSING} required variable(s) missing. Run ctl.sh onboard to configure them." >&2
+            exit 1
+          fi
+          echo "  All required variables present."
+
+      - name: Show resolved config (no secrets)
+        env:
+          PROJECT_NAME: ah-premium
+          PROD_HOST:    ${{ vars.PRODUCTION_HOST }}
+          PROD_PORT:    ${{ vars.PRODUCTION_PORT }}
+          PROD_USER:    ${{ vars.PRODUCTION_USER }}
+        run: |
+          echo "project=${PROJECT_NAME}"
+          echo "host=${PROD_HOST}"
+          echo "port=${PROD_PORT:-22}"
+          echo "user=${PROD_USER:-deploy}"
+          echo "version=${{ steps.version.outputs.version }}"
+          echo "sha=${{ steps.version.outputs.sha }}"
+
+      - name: Install SSH key
+        uses: appleboy/ssh-action@v1
+        with:
+          host:           ${{ vars.PRODUCTION_HOST }}
+          port:           ${{ vars.PRODUCTION_PORT || '22' }}
+          username:       ${{ vars.PRODUCTION_USER || 'deploy' }}
+          key:            ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          # Strict host key checking — refuse to deploy if the server's host
+          # key does not match PRODUCTION_KNOWN_HOSTS. Prevents MITM.
+          known_hosts:    ${{ vars.PRODUCTION_KNOWN_HOSTS }}
+          command_timeout: 8m
+          script: agentos deploy ah-premium ${{ steps.version.outputs.sha }} github-actions
+
+      - name: Probe production healthcheck
+        id: health
+        if: ${{ inputs.dry_run != 'true' }}
+        run: |
+          set -euo pipefail
+          URL="http://127.0.0.1:4415/index.html"
+          echo "Probing ${URL}"
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 10 "${URL}"; then
+              echo "url=${URL}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "healthcheck failed" >&2
+          exit 1

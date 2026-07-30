@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# healthcheck — minimal external health probe.
+# RENDERED from ~/AgentOS/deployment/templates/server-side/healthcheck.template
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
+require_cmd curl
+
+ATTEMPTS="${HEALTHCHECK_RETRIES:-3}"
+TIMEOUT="${HEALTHCHECK_TIMEOUT:-10}"
+
+for i in $(seq 1 "${ATTEMPTS}"); do
+  if curl -fsS --max-time "${TIMEOUT}" "${HEALTHCHECK_URL}"; then
+    exit 0
+  fi
+  sleep 1
+done
+err "healthcheck failed after ${ATTEMPTS} attempts (url=${HEALTHCHECK_URL})"
+exit 1

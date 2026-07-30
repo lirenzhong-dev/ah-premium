@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# cleanup — project-level cleanup: prune old releases / logs / backups.
+# RENDERED from ~/AgentOS/deployment/templates/server-side/cleanup.template
+# by onboard-project.sh. Do not edit the rendered copy in a project.
+#
+# Designed to be safe to run as the `deploy` user (it only deletes files
+# deploy owns under /opt/projects/<project>/).
+#
+# Flags:
+#   --dry-run             show what would be deleted; default
+#   --yes                 actually delete (required for non-dry-run)
+#   --keep-releases N     keep newest N releases (default: KEEP_RELEASES=5)
+#   --keep-logs N         keep newest N log files (default: 30)
+#   --keep-backups N      keep newest N backup files (default: 10)
+#   --target {releases,logs,backups,all}   what to clean (default: all)
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
+# ---------- arg parsing ----------
+DRY_RUN="true"
+ASSUME_YES="false"
+KEEP_R="${KEEP_RELEASES:-5}"
+KEEP_L="30"
+KEEP_B="10"
+TARGET="all"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN="true"; shift ;;
+    --yes|-y)  DRY_RUN="false"; ASSUME_YES="true"; shift ;;
+    --keep-releases) KEEP_R="$2"; shift 2 ;;
+    --keep-logs)     KEEP_L="$2"; shift 2 ;;
+    --keep-backups)  KEEP_B="$2"; shift 2 ;;
+    --target)        TARGET="$2"; shift 2 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+export DRY_RUN
+
+# Safety: refuse to clean the laozi project (it is owned by another setup).
+case "${APP_DIR}" in
+  /opt/laozi-persona-lab|*/laozi-persona-lab)
+    die "refusing to clean laozi — it is owned by another setup"
+    ;;
+esac
+
+# Safety: refuse to remove current/previous targets from releases.
+get_release_paths() {
+  local protect=()
+  [[ -L "${CURRENT_LINK}"  ]] && protect+=("$(readlink "${CURRENT_LINK}")")
+  [[ -L "${PREVIOUS_LINK}" ]] && protect+=("$(readlink "${PREVIOUS_LINK}")")
+  printf '%s\n' "${protect[@]}"
+}
+
+# Compute what would be deleted for releases.
+compute_releases_to_remove() {
+  cd "${RELEASES_DIR}" 2>/dev/null || { echo ""; return; }
+  # Newest first; skip the first KEEP_R; protect current/previous.
+  local candidate protect
+  protect="$(get_release_paths)"
+  ls -1dt */ 2>/dev/null \
+    | tail -n +$((KEEP_R + 1)) \
+    | while read -r d; do
+        d="${d%/}"
+        full="${RELEASES_DIR}/${d}"
+        if grep -qx "${full}" <<< "${protect}"; then
+          echo "PROTECT: ${full}" >&2
+          continue
+        fi
+        echo "${full}"
+      done
+}
+
+# Compute what would be deleted for logs.
+compute_logs_to_remove() {
+  cd "${SHARED_LOGS}" 2>/dev/null || { echo ""; return; }
+  # Skip the first KEEP_L; protect the current deployments.jsonl if it exists.
+  ls -1t deployments.jsonl 2>/dev/null | tail -n +$((KEEP_L + 1))
+  ls -1t deploy-*.log rollback-*.log 2>/dev/null | tail -n +$((KEEP_L + 1))
+}
+
+# Compute what would be deleted for backups.
+compute_backups_to_remove() {
+  cd "${SHARED_BACKUPS}" 2>/dev/null || { echo ""; return; }
+  ls -1t 2>/dev/null | tail -n +$((KEEP_B + 1))
+}
+
+# Format bytes for human display.
+human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "$1"; }
+
+# Disk usage of a path (best effort; 0 if stat fails).
+du_bytes() {
+  du -sb "$1" 2>/dev/null | awk '{print $1}' || echo 0
+}
+
+# ---------- summary ----------
+echo "==> cleanup target: ${APP_DIR}"
+echo "    keep_releases: ${KEEP_R}    keep_logs: ${KEEP_L}    keep_backups: ${KEEP_B}"
+echo "    dry_run:       ${DRY_RUN}"
+echo
+
+FREED=0
+COUNT_R=0; COUNT_L=0; COUNT_B=0
+
+# Releases
+if [[ "${TARGET}" =~ ^(releases|all)$ ]]; then
+  echo "Releases to remove (keeping newest ${KEEP_R}, plus current/previous):"
+  REL_TO_REMOVE="$(compute_releases_to_remove 2>/dev/null || true)"
+  if [[ -z "${REL_TO_REMOVE}" ]]; then
+    echo "  (none)"
+  else
+    while IFS= read -r p; do
+      [[ -z "${p}" ]] && continue
+      [[ ! -d "${p}" ]] && continue
+      sz="$(du_bytes "${p}")"
+      printf "  %s  (%s)\n" "${p}" "$(human "${sz}")"
+      FREED=$((FREED + sz))
+      COUNT_R=$((COUNT_R + 1))
+    done <<< "${REL_TO_REMOVE}"
+  fi
+  echo
+fi
+
+# Logs
+if [[ "${TARGET}" =~ ^(logs|all)$ ]]; then
+  echo "Log files to remove (keeping newest ${KEEP_L}):"
+  LOG_TO_REMOVE="$(compute_logs_to_remove 2>/dev/null || true)"
+  if [[ -z "${LOG_TO_REMOVE}" ]]; then
+    echo "  (none)"
+  else
+    while IFS= read -r f; do
+      [[ -z "${f}" ]] && continue
+      p="${SHARED_LOGS}/${f}"
+      [[ ! -f "${p}" ]] && continue
+      sz="$(du_bytes "${p}")"
+      printf "  %s  (%s)\n" "${p}" "$(human "${sz}")"
+      FREED=$((FREED + sz))
+      COUNT_L=$((COUNT_L + 1))
+    done <<< "${LOG_TO_REMOVE}"
+  fi
+  echo
+fi
+
+# Backups
+if [[ "${TARGET}" =~ ^(backups|all)$ ]]; then
+  echo "Backups to remove (keeping newest ${KEEP_B}):"
+  BK_TO_REMOVE="$(compute_backups_to_remove 2>/dev/null || true)"
+  if [[ -z "${BK_TO_REMOVE}" ]]; then
+    echo "  (none)"
+  else
+    while IFS= read -r f; do
+      [[ -z "${f}" ]] && continue
+      p="${SHARED_BACKUPS}/${f}"
+      [[ ! -f "${p}" && ! -d "${p}" ]] && continue
+      sz="$(du_bytes "${p}")"
+      printf "  %s  (%s)\n" "${p}" "$(human "${sz}")"
+      FREED=$((FREED + sz))
+      COUNT_B=$((COUNT_B + 1))
+    done <<< "${BK_TO_REMOVE}"
+  fi
+  echo
+fi
+
+# Summary line
+echo "==> would free approximately $(human "${FREED}") across ${COUNT_R} releases, ${COUNT_L} logs, ${COUNT_B} backups"
+
+# If dry-run, stop here.
+if [[ "${DRY_RUN}" == "true" ]]; then
+  echo
+  info "dry-run: nothing was deleted. Re-run with --yes to actually delete."
+  exit 0
+fi
+
+# If not dry-run, require --yes.
+if [[ "${ASSUME_YES}" != "true" ]]; then
+  die "refusing to delete without --yes flag (or answer 'yes' to the prompt below); rerun with --yes"
+fi
+
+# ---------- actually delete ----------
+echo
+info "deleting (this cannot be undone)..."
+
+if [[ "${TARGET}" =~ ^(releases|all)$ ]]; then
+  REL_TO_REMOVE="$(compute_releases_to_remove 2>/dev/null || true)"
+  while IFS= read -r p; do
+    [[ -z "${p}" || ! -d "${p}" ]] && continue
+    rm -rf -- "${p}"
+  done <<< "${REL_TO_REMOVE}"
+fi
+
+if [[ "${TARGET}" =~ ^(logs|all)$ ]]; then
+  LOG_TO_REMOVE="$(compute_logs_to_remove 2>/dev/null || true)"
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    p="${SHARED_LOGS}/${f}"
+    [[ ! -f "${p}" ]] && continue
+    rm -f -- "${p}"
+  done <<< "${LOG_TO_REMOVE}"
+fi
+
+if [[ "${TARGET}" =~ ^(backups|all)$ ]]; then
+  BK_TO_REMOVE="$(compute_backups_to_remove 2>/dev/null || true)"
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    p="${SHARED_BACKUPS}/${f}"
+    [[ ! -e "${p}" ]] && continue
+    rm -rf -- "${p}"
+  done <<< "${BK_TO_REMOVE}"
+fi
+
+info "cleanup complete. freed approximately $(human "${FREED}")."
