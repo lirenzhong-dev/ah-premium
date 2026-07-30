@@ -1,0 +1,9 @@
+{
+  "name": "ah-premium",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A+H 股折溢价实时监控（纯静态页面，行情由浏览器直连腾讯行情接口）",
+  "scripts": {
+    "start": "python3 -m http.server 4415 --bind 127.0.0.1 --directory ."
+  }
+}

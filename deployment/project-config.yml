@@ -10,7 +10,7 @@ app_host:     127.0.0.1
 deploy_user:  deploy
 service_name: ah-premium
 
-github_owner: none
+github_owner: lirenzhong-dev
 github_repo:  ah-premium
 
 workdir_rel:  .
